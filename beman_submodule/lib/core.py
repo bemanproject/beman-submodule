@@ -1,27 +1,27 @@
-#!/usr/bin/env python3
-
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-import argparse
 import configparser
 import filecmp
 import glob
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 
 def directory_compare(
-        reference: str | Path, actual: str | Path, ignore, allow_untracked_files: bool):
+    reference: str | Path, actual: str | Path, ignore, allow_untracked_files: bool
+):
+    """Compare two directories recursively, optionally ignoring certain files."""
     reference, actual = Path(reference), Path(actual)
 
     compared = filecmp.dircmp(reference, actual, ignore=ignore)
-    if (compared.left_only
+    if (
+        compared.left_only
         or (compared.right_only and not allow_untracked_files)
-        or compared.diff_files):
+        or compared.diff_files
+    ):
         return False
     for common_dir in compared.common_dirs:
         path1 = reference / common_dir
@@ -30,20 +30,31 @@ def directory_compare(
             return False
     return True
 
+
 class BemanSubmodule:
+    """Represents a beman submodule configuration."""
+
     def __init__(
-            self, dirpath: str | Path, remote: str, commit_hash: str,
-            allow_untracked_files: bool):
+        self,
+        dirpath: str | Path,
+        remote: str,
+        commit_hash: str,
+        allow_untracked_files: bool,
+    ):
         self.dirpath = Path(dirpath)
         self.remote = remote
         self.commit_hash = commit_hash
         self.allow_untracked_files = allow_untracked_files
 
+
 def parse_beman_submodule_file(path):
+    """Parse a .beman_submodule configuration file."""
     config = configparser.ConfigParser()
     read_result = config.read(path)
+
     def fail():
         raise Exception(f'Failed to parse {path} as a .beman_submodule file')
+
     if not read_result:
         fail()
     if 'beman_submodule' not in config:
@@ -53,14 +64,18 @@ def parse_beman_submodule_file(path):
     if 'commit_hash' not in config['beman_submodule']:
         fail()
     allow_untracked_files = config.getboolean(
-        'beman_submodule', 'allow_untracked_files', fallback=False)
+        'beman_submodule', 'allow_untracked_files', fallback=False
+    )
     return BemanSubmodule(
         Path(path).resolve().parent,
         config['beman_submodule']['remote'],
         config['beman_submodule']['commit_hash'],
-        allow_untracked_files)
+        allow_untracked_files,
+    )
+
 
 def get_beman_submodule(path: str | Path):
+    """Get a BemanSubmodule from a directory path, or None if not found."""
     beman_submodule_filepath = Path(path) / '.beman_submodule'
 
     if beman_submodule_filepath.is_file():
@@ -68,7 +83,9 @@ def get_beman_submodule(path: str | Path):
     else:
         return None
 
+
 def find_beman_submodules_in(path):
+    """Find all beman submodules in a directory tree."""
     path = Path(path)
     assert path.is_dir()
 
@@ -78,54 +95,78 @@ def find_beman_submodules_in(path):
             result.append(parse_beman_submodule_file(dirpath / '.beman_submodule'))
     return sorted(result, key=lambda module: module.dirpath)
 
+
 def cwd_git_repository_path():
+    """Get the root path of the current git repository, or None if not in a repo."""
     process = subprocess.run(
-        ['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True,
-        check=False)
+        ['git', 'rev-parse', '--show-toplevel'],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if process.returncode == 0:
         return process.stdout.strip()
-    elif "fatal: not a git repository" in process.stderr:
+    elif 'fatal: not a git repository' in process.stderr:
         return None
     else:
-        raise Exception("git rev-parse --show-toplevel failed")
+        raise Exception('git rev-parse --show-toplevel failed')
+
 
 def clone_beman_submodule_into_tmpdir(beman_submodule, remote):
+    """Clone a beman submodule into a temporary directory."""
     tmpdir = tempfile.TemporaryDirectory()
     subprocess.run(
-        ['git', 'clone', beman_submodule.remote, tmpdir.name], capture_output=True,
-        check=True)
+        ['git', 'clone', beman_submodule.remote, tmpdir.name],
+        capture_output=True,
+        check=True,
+    )
     if not remote:
         subprocess.run(
             ['git', '-C', tmpdir.name, 'reset', '--hard', beman_submodule.commit_hash],
-            capture_output=True, check=True)
+            capture_output=True,
+            check=True,
+        )
     return tmpdir
 
+
 def get_paths(beman_submodule):
+    """Get all paths in a beman submodule (excluding .git)."""
     tmpdir = clone_beman_submodule_into_tmpdir(beman_submodule, False)
     paths = set(glob.glob('*', root_dir=Path(tmpdir.name), include_hidden=True))
     paths.remove('.git')
     return paths
 
+
 def beman_submodule_status(beman_submodule):
+    """Get the status string for a beman submodule."""
     tmpdir = clone_beman_submodule_into_tmpdir(beman_submodule, False)
     if directory_compare(
-            tmpdir.name, beman_submodule.dirpath, ['.beman_submodule', '.git'],
-            beman_submodule.allow_untracked_files):
-        status_character=' '
+        tmpdir.name,
+        beman_submodule.dirpath,
+        ['.beman_submodule', '.git'],
+        beman_submodule.allow_untracked_files,
+    ):
+        status_character = ' '
     else:
-        status_character='+'
+        status_character = '+'
     parent_repo_path = cwd_git_repository_path()
     if not parent_repo_path:
         raise Exception('this is not a git repository')
     relpath = Path(beman_submodule.dirpath).relative_to(Path(parent_repo_path))
     return status_character + ' ' + beman_submodule.commit_hash + ' ' + str(relpath)
 
+
 def beman_submodule_update(beman_submodule, remote):
+    """Update a beman submodule to match its configured state."""
     tmpdir = clone_beman_submodule_into_tmpdir(beman_submodule, remote)
     tmp_path = Path(tmpdir.name)
     sha_process = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'], capture_output=True, check=True, text=True,
-        cwd=tmp_path)
+        ['git', 'rev-parse', 'HEAD'],
+        capture_output=True,
+        check=True,
+        text=True,
+        cwd=tmp_path,
+    )
 
     if beman_submodule.allow_untracked_files:
         for path in get_paths(beman_submodule):
@@ -147,7 +188,9 @@ def beman_submodule_update(beman_submodule, remote):
     shutil.rmtree(tmp_path / '.git')
     shutil.copytree(tmp_path, beman_submodule.dirpath, dirs_exist_ok=True)
 
+
 def update_command(remote, path):
+    """Execute the update command."""
     if not path:
         parent_repo_path = cwd_git_repository_path()
         if not parent_repo_path:
@@ -161,10 +204,11 @@ def update_command(remote, path):
     for beman_submodule in beman_submodules:
         beman_submodule_update(beman_submodule, remote)
 
+
 def add_command(repository, path, allow_untracked_files):
+    """Execute the add command."""
     tmpdir = tempfile.TemporaryDirectory()
-    subprocess.run(
-        ['git', 'clone', repository], capture_output=True, check=True, cwd=tmpdir.name)
+    subprocess.run(['git', 'clone', repository], capture_output=True, check=True, cwd=tmpdir.name)
     repository_name = os.listdir(tmpdir.name)[0]
     if not path:
         path = Path(repository_name)
@@ -175,18 +219,24 @@ def add_command(repository, path, allow_untracked_files):
     path.mkdir(exist_ok=allow_untracked_files)
     tmpdir_repo = Path(tmpdir.name) / repository_name
     sha_process = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'], capture_output=True, check=True, text=True,
-        cwd=tmpdir_repo)
+        ['git', 'rev-parse', 'HEAD'],
+        capture_output=True,
+        check=True,
+        text=True,
+        cwd=tmpdir_repo,
+    )
     with open(tmpdir_repo / '.beman_submodule', 'w') as f:
         f.write('[beman_submodule]\n')
         f.write(f'remote={repository}\n')
         f.write(f'commit_hash={sha_process.stdout.strip()}\n')
         if allow_untracked_files:
             f.write('allow_untracked_files=True\n')
-    shutil.rmtree(tmpdir_repo /'.git')
+    shutil.rmtree(tmpdir_repo / '.git')
     shutil.copytree(tmpdir_repo, path, dirs_exist_ok=True)
 
+
 def status_command(paths):
+    """Execute the status command."""
     if not paths:
         parent_repo_path = cwd_git_repository_path()
         if not parent_repo_path:
@@ -202,59 +252,10 @@ def status_command(paths):
     for beman_submodule in beman_submodules:
         print(beman_submodule_status(beman_submodule))
 
-def get_parser():
-    parser = argparse.ArgumentParser(description='Beman pseudo-submodule tool')
-    subparsers = parser.add_subparsers(dest='command', help='available commands')
-    parser_update = subparsers.add_parser('update', help='update beman_submodules')
-    parser_update.add_argument(
-        '--remote', action='store_true',
-        help='update a beman_submodule to its latest from upstream')
-    parser_update.add_argument(
-        'beman_submodule_path', nargs='?',
-        help='relative path to the beman_submodule to update')
-    parser_add = subparsers.add_parser('add', help='add a new beman_submodule')
-    parser_add.add_argument('repository', help='git repository to add')
-    parser_add.add_argument(
-        'path', nargs='?', help='path where the repository will be added')
-    parser_add.add_argument(
-        '--allow-untracked-files', action='store_true',
-        help='the beman_submodule will not occupy the subdirectory exclusively')
-    parser_status = subparsers.add_parser(
-        'status', help='show the status of beman_submodules')
-    parser_status.add_argument('paths', nargs='*')
-    return parser
-
-def parse_args(args):
-    return get_parser().parse_args(args)
-
-def usage():
-    return get_parser().format_help()
-
-def run_command(args):
-    if args.command == 'update':
-        update_command(args.remote, args.beman_submodule_path)
-    elif args.command == 'add':
-        add_command(args.repository, args.path, args.allow_untracked_files)
-    elif args.command == 'status':
-        status_command(args.paths)
-    else:
-        raise Exception(usage())
 
 def check_for_git(path):
+    """Check if git is available in PATH."""
     env = os.environ.copy()
     if path is not None:
-        env["PATH"] = path
-    return shutil.which("git", path=env.get("PATH")) is not None
-
-def main():
-    try:
-        if not check_for_git(None):
-            raise Exception('git not found in PATH')
-        args = parse_args(sys.argv[1:])
-        run_command(args)
-    except Exception as e:
-        print("Error:", e, file=sys.stderr)
-        sys.exit(1)
-
-if __name__ == '__main__':
-    main()
+        env['PATH'] = path
+    return shutil.which('git', path=env.get('PATH')) is not None
